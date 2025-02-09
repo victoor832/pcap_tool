@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visor PCAP</title>
+    <style>
+        /* [Estilos anteriores se mantienen igual] */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .drop-zone {
+            border: 2px dashed #ccc;
+            border-radius: 4px;
+            padding: 20px;
+            text-align: center;
+            background: #f8f9fa;
+            cursor: pointer;
+            margin: 20px 0;
+            transition: border-color 0.3s ease;
+        }
+
+        .drop-zone:hover {
+            border-color: #666;
+        }
+
+        .drop-zone.dragover {
+            border-color: #2196F3;
+            background: #e3f2fd;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .error {
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c00;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+
+        .info {
+            background: #e3f2fd;
+            border: 1px solid #2196F3;
+            color: #0d47a1;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+
+        .packets-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            font-size: 14px;
+        }
+
+        .packets-table th,
+        .packets-table td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        .packets-table th {
+            background: #f5f5f5;
+            font-weight: bold;
+        }
+
+        .packets-table tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+
+        .packets-table tr:hover {
+            background: #f0f0f0;
+        }
+
+        .ascii-cell {
+            font-family: monospace;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .search-container {
+            margin: 10px 0;
+            display: none;
+        }
+
+        .search-input {
+            padding: 8px;
+            width: 200px;
+            margin-right: 10px;
+        }
+
+        #search-btn {
+            padding: 8px 16px;
+            background: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .highlight {
+            background-color: yellow;
+        }
+    </style>
+</head>
+<body>
+    <h1>Visor PCAP</h1>
+    
+    <div class="drop-zone" id="drop-zone">
+        <p>Arrastra y suelta tu archivo PCAP aquí o haz click para seleccionarlo</p>
+        <input type="file" accept=".pcap,.cap,.pcapng" class="file-input" id="file-input">
+    </div>
+
+    <div id="error" style="display: none;" class="error"></div>
+    <div id="info" style="display: none;" class="info"></div>
+    
+    <div class="search-container" id="search-container">
+        <input type="text" class="search-input" id="search-input" placeholder="Buscar texto...">
+        <button id="search-btn">Buscar</button>
+    </div>
+    
+    <div id="packets-container"></div>
+
+    <script>
+        class PCAPParser {
+            constructor(buffer) {
+                this.view = new DataView(buffer);
+                this.packets = [];
+            }
+
+            parse() {
+                // Intentar diferentes métodos de parsing
+                try {
+                    // Primero intentar como datos raw
+                    this.parseRawData();
+                    
+                    if (this.packets.length === 0) {
+                        // Intentar como PCAP estándar
+                        this.parsePCAP(false);
+                    }
+                    
+                    if (this.packets.length === 0) {
+                        // Intentar como PCAP reverse
+                        this.parsePCAP(true);
+                    }
+                    
+                    if (this.packets.length === 0) {
+                        // Intentar como PCAP-NG
+                        this.parsePCAPNG();
+                    }
+
+                    return this.packets;
+                } catch (e) {
+                    console.warn('Error en parsing:', e);
+                    // Si todo falla, tratar todo el contenido como un solo paquete
+                    this.parseAsRawContent();
+                    return this.packets;
+                }
+            }
+
+            parseRawData() {
+                // Dividir los datos en chunks y buscar contenido ASCII
+                const chunkSize = 1024;
+                let offset = 0;
+
+                while (offset < this.view.byteLength) {
+                    const remainingBytes = this.view.byteLength - offset;
+                    const currentChunkSize = Math.min(chunkSize, remainingBytes);
+                    
+                    const chunk = new Uint8Array(
+                        this.view.buffer.slice(offset, offset + currentChunkSize)
+                    );
+
+                    const ascii = this.extractASCII(chunk);
+                    if (ascii.trim().length > 0) {
+                        this.packets.push({
+                            timestamp: new Date().toISOString(),
+                            length: currentChunkSize,
+                            ascii: ascii
+                        });
+                    }
+
+                    offset += currentChunkSize;
+                }
+            }
+
+            parseAsRawContent() {
+                // Tratar todo el contenido como un solo bloque de datos
+                const data = new Uint8Array(this.view.buffer);
+                const ascii = this.extractASCII(data);
+                
+                if (ascii.trim().length > 0) {
+                    this.packets.push({
+                        timestamp: new Date().toISOString(),
+                        length: data.length,
+                        ascii: ascii
+                    });
+                }
+            }
+
+            extractASCII(data) {
+                return Array.from(data)
+                    .map(byte => {
+                        // Incluir todos los caracteres imprimibles y algunos especiales
+                        if ((byte >= 32 && byte <= 126) || 
+                            byte === 10 || byte === 13 || 
+                            byte === 9) {
+                            return String.fromCharCode(byte);
+                        }
+                        return '.';
+                    })
+                    .join('')
+                    .replace(/\.+/g, '.'); // Colapsar múltiples puntos en uno solo
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const dropZone = document.getElementById('drop-zone');
+            const fileInput = document.getElementById('file-input');
+            const errorDiv = document.getElementById('error');
+            let currentPackets = [];
+
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.classList.add('dragover');
+            });
+
+            dropZone.addEventListener('dragleave', () => {
+                dropZone.classList.remove('dragover');
+            });
+
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('dragover');
+                processFile(e.dataTransfer.files[0]);
+            });
+
+            dropZone.addEventListener('click', () => {
+                fileInput.click();
+            });
+
+            fileInput.addEventListener('change', (e) => {
+                processFile(e.target.files[0]);
+            });
+
+            function processFile(file) {
+                if (!file) return;
+                
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const parser = new PCAPParser(e.target.result);
+                        currentPackets = parser.parse();
+                        displayPackets(currentPackets);
+                        errorDiv.style.display = 'none';
+                        document.getElementById('search-container').style.display = 'block';
+                    } catch (err) {
+                        errorDiv.textContent = `Error: ${err.message}`;
+                        errorDiv.style.display = 'block';
+                    }
+                };
+                reader.readAsArrayBuffer(file);
+            }
+
+            function displayPackets(packets) {
+                const container = document.getElementById('packets-container');
+                const table = document.createElement('table');
+                table.className = 'packets-table';
+
+                const headers = ['#', 'Contenido'];
+                const thead = document.createElement('thead');
+                const headerRow = document.createElement('tr');
+                headers.forEach(header => {
+                    const th = document.createElement('th');
+                    th.textContent = header;
+                    headerRow.appendChild(th);
+                });
+                thead.appendChild(headerRow);
+                table.appendChild(thead);
+
+                const tbody = document.createElement('tbody');
+                packets.forEach((packet, index) => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${index + 1}</td>
+                        <td class="ascii-cell">${packet.ascii}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+                table.appendChild(tbody);
+
+                container.innerHTML = '';
+                container.appendChild(table);
+            }
+
+            function setupSearch() {
+                const searchBtn = document.getElementById('search-btn');
+                const searchInput = document.getElementById('search-input');
+
+                searchBtn.addEventListener('click', () => {
+                    const searchTerm = searchInput.value.toLowerCase();
+                    const cells = document.querySelectorAll('.ascii-cell');
+                    
+                    cells.forEach(cell => {
+                        const text = cell.textContent;
+                        if (text.toLowerCase().includes(searchTerm)) {
+                            cell.innerHTML = text.replace(new RegExp(searchTerm, 'gi'), 
+                                match => `<span class="highlight">${match}</span>`);
+                        }
+                    });
+                });
+
+                searchInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        searchBtn.click();
+                    }
+                });
+            }
+
+            setupSearch();
+        });
+    </script>
+</body>
+</html>
