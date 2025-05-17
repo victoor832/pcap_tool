@@ -1,0 +1,15 @@
+{
+  "name": "wireshark-web-capture-server",
+  "version": "1.0.0",
+  "description": "Servidor de captura en tiempo real para Wireshark Web",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.13.0",
+    "pcap": "^3.1.0",
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  }
+}
